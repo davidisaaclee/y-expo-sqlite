@@ -9,6 +9,7 @@ const DB_PREFIX = "exposqlite-persistence-";
 
 export class ExpoSQLitePersistence extends ObservableV2<{
   synced: (persistence: ExpoSQLitePersistence) => void;
+  compacted: (persistence: ExpoSQLitePersistence, previousSize: number) => void;
 }> {
   doc: Y.Doc;
   name: string;
@@ -25,13 +26,13 @@ export class ExpoSQLitePersistence extends ObservableV2<{
     this.name = name;
 
     this.whenSynced = promise.create((resolve) =>
-      this.on("synced", () => resolve(this)),
+      this.on("synced", () => resolve(this))
     );
 
     this.db = openDatabaseSync(`${DB_PREFIX}${name}.sqlite`);
     this.db
       .execAsync(
-        "CREATE TABLE IF NOT EXISTS updates (id INTEGER PRIMARY KEY, content BLOB)",
+        "CREATE TABLE IF NOT EXISTS updates (id INTEGER PRIMARY KEY, content BLOB)"
       )
       .then(() => {
         const s = Y.encodeStateAsUpdate(doc);
@@ -41,19 +42,29 @@ export class ExpoSQLitePersistence extends ObservableV2<{
       })
       .then(() =>
         this.db
-          .getAllAsync("SELECT content FROM updates")
-          .catch((e) => console.error("error loading updates", e)),
+          .getAllAsync("SELECT id, content FROM updates")
+          .catch((e) => console.error("error loading updates", e))
       )
       .then((res) => {
+        let maxLoadedId = 0;
+        let loadedCount = 0;
+
         if (res != undefined && res.length) {
           for (const row of res) {
             // @ts-ignore
             Y.applyUpdate(doc, new Uint8Array(row.content));
+            // @ts-ignore
+            if (row.id > maxLoadedId) maxLoadedId = row.id;
           }
+          loadedCount = res.length;
         }
 
         this.synced = true;
         this.emit("synced", [this]);
+
+        if (loadedCount > PREFERRED_TRIM_SIZE) {
+          this._compact(maxLoadedId, loadedCount);
+        }
       });
 
     this.destroy = this.destroy.bind(this);
@@ -70,6 +81,27 @@ export class ExpoSQLitePersistence extends ObservableV2<{
     return this.db
       .runAsync(`INSERT INTO updates (content) VALUES (?)`, [update])
       .catch((e) => console.error("error storing update", e));
+  }
+
+  _compact(maxLoadedId: number, loadedSize: number) {
+    if (this._destroyed) return;
+
+    // NB: `compacted` might include updated data after `maxLoadedId`, but
+    // that's fine: Yjs updates are idempotent, so applying the compacted state
+    // and then the updates will yield the same result as applying all updates
+    // in order.
+    const compacted = Y.encodeStateAsUpdate(this.doc);
+    this.db
+      .withExclusiveTransactionAsync(async (tx) => {
+        await tx.runAsync("DELETE FROM updates WHERE id <= ?", [maxLoadedId]);
+        await tx.runAsync("INSERT INTO updates (content) VALUES (?)", [
+          compacted,
+        ]);
+      })
+      .then(() => {
+        this.emit("compacted", [this, loadedSize]);
+      })
+      .catch((e) => console.error("error compacting updates", e));
   }
 
   destroy() {
