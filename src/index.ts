@@ -5,13 +5,10 @@ import { openDatabaseSync, SQLiteDatabase } from "expo-sqlite";
 
 export const PREFERRED_TRIM_SIZE = 500;
 
-const DB_PREFIX = "exposqlite-persistence-";
-
 export class ExpoSQLitePersistence extends ObservableV2<{
   synced: (persistence: ExpoSQLitePersistence) => void;
 }> {
   doc: Y.Doc;
-  name: string;
   whenSynced: Promise<this>;
   db: SQLiteDatabase;
   synced: boolean = false;
@@ -19,19 +16,18 @@ export class ExpoSQLitePersistence extends ObservableV2<{
   _dbsize = 0;
   _destroyed = false;
 
-  constructor(name: string, doc: Y.Doc) {
+  constructor(sqliteDatabase: SQLiteDatabase, doc: Y.Doc) {
     super();
     this.doc = doc;
-    this.name = name;
 
     this.whenSynced = promise.create((resolve) =>
-      this.on("synced", () => resolve(this)),
+      this.on("synced", () => resolve(this))
     );
 
-    this.db = openDatabaseSync(`${DB_PREFIX}${name}.sqlite`);
+    this.db = sqliteDatabase;
     this.db
       .execAsync(
-        "CREATE TABLE IF NOT EXISTS updates (id INTEGER PRIMARY KEY, content BLOB)",
+        "CREATE TABLE IF NOT EXISTS updates (id INTEGER PRIMARY KEY, content BLOB)"
       )
       .then(() => {
         const s = Y.encodeStateAsUpdate(doc);
@@ -42,7 +38,7 @@ export class ExpoSQLitePersistence extends ObservableV2<{
       .then(() =>
         this.db
           .getAllAsync("SELECT content FROM updates")
-          .catch((e) => console.error("error loading updates", e)),
+          .catch((e) => console.error("error loading updates", e))
       )
       .then((res) => {
         if (res != undefined && res.length) {
