@@ -17,6 +17,7 @@ export class ExpoSQLitePersistence extends ObservableV2<{
   db: SQLiteDatabase;
   synced: boolean = false;
   _dbsize = 0;
+  _compacting = false;
   _destroyed = false;
 
   constructor(name: string, doc: Y.Doc) {
@@ -81,31 +82,42 @@ export class ExpoSQLitePersistence extends ObservableV2<{
   async _compactIfNeeded() {
     if (this._dbsize <= PREFERRED_TRIM_SIZE) return;
     if (this._destroyed) return;
+    if (this._compacting) return;
+    this._compacting = true;
 
-    const stats = await this.db.getFirstAsync<{
-      cnt: number;
-      maxId: number;
-    }>("SELECT COUNT(*) as cnt, MAX(id) as maxId FROM updates");
-    if (!stats || stats.cnt <= PREFERRED_TRIM_SIZE) {
-      this._dbsize = stats?.cnt ?? 0;
-      return;
-    }
+    try {
+      const stats = await this.db.getFirstAsync<{
+        cnt: number;
+        maxId: number;
+      }>("SELECT COUNT(*) as cnt, MAX(id) as maxId FROM updates");
+      if (!stats || stats.cnt <= PREFERRED_TRIM_SIZE) {
+        this._dbsize = stats?.cnt ?? 0;
+        return;
+      }
 
-    // NB: `compacted` might include data from updates after `maxId`, but
-    // that's fine: Yjs updates are idempotent, so applying the compacted state
-    // and then the newer updates will yield the same result.
-    const compacted = Y.encodeStateAsUpdate(this.doc);
-    await this.db
-      .withExclusiveTransactionAsync(async (tx) => {
+      // NB: `compacted` might include data from updates after `maxId`, but
+      // that's fine: Yjs updates are idempotent, so applying the compacted state
+      // and then the newer updates will yield the same result.
+      const compacted = Y.encodeStateAsUpdate(this.doc);
+      let newSize = 1;
+      await this.db.withExclusiveTransactionAsync(async (tx) => {
         await tx.runAsync("DELETE FROM updates WHERE id <= ?", [stats.maxId]);
         await tx.runAsync("INSERT INTO updates (content) VALUES (?)", [
           compacted,
         ]);
-      })
-      .catch((e) => console.error("error compacting updates", e));
+        const row = await tx.getFirstAsync<{ cnt: number }>(
+          "SELECT COUNT(*) as cnt FROM updates"
+        );
+        if (row) newSize = row.cnt;
+      });
 
-    this._dbsize = 1;
-    this.emit("compacted", [this, stats.cnt]);
+      this._dbsize = newSize;
+      this.emit("compacted", [this, stats.cnt]);
+    } catch (e) {
+      console.error("error compacting updates", e);
+    } finally {
+      this._compacting = false;
+    }
   }
 
   destroy() {
