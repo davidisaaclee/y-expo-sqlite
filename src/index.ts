@@ -43,10 +43,12 @@ export class ExpoSQLitePersistence extends ObservableV2<{
       )
       .then((res) => {
         if (res != undefined && res.length) {
-          for (const row of res) {
-            // @ts-ignore
-            Y.applyUpdate(doc, new Uint8Array(row.content));
-          }
+          doc.transact(() => {
+            for (const row of res) {
+              // @ts-ignore
+              Y.applyUpdate(doc, new Uint8Array(row.content));
+            }
+          }, this);
           this._dbsize = res.length;
         }
 
