@@ -59,9 +59,9 @@ export class ExpoSQLitePersistence extends ObservableV2<{
       });
 
     this.destroy = this.destroy.bind(this);
-    this._storeUpdate.bind(this);
-    doc.on("update", this._storeUpdate.bind(this));
-    doc.on("destroy", this.destroy.bind(this));
+    this._storeUpdate = this._storeUpdate.bind(this);
+    doc.on("update", this._storeUpdate);
+    doc.on("destroy", this.destroy);
   }
   _storeUpdate(update: Uint8Array, origin: any) {
     if (!this.db || origin == this) {
